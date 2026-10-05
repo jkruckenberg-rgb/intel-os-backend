@@ -1,0 +1,22 @@
+{
+  "name": "intel-os-backend",
+  "version": "1.0.0",
+  "description": "INTEL·OS backend sweeper — SAM.gov proxy, scheduled sweeps, email notifications",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "node-fetch": "^2.7.0",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.7",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
