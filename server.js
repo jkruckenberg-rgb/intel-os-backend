@@ -166,7 +166,7 @@ JK Consulting, LLC
 }
 
 // ─── SAM.GOV PROXY ───────────────────────────────────────────────────────────
-app.get('/api/sam/opportunities', async (req, res) => {
+const apiKey = req.query.api_key || req.headers['x-api-key'] || SAM_API_KEY;
   const apiKey = req.headers['x-api-key'] || SAM_API_KEY;
   if (!apiKey) {
     return res.status(400).json({ error: 'SAM.gov API key required' });
