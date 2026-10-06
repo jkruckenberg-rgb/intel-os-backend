@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-// Node 18+ has fetch built-in — no import needed
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 let cheerio;
@@ -26,6 +25,17 @@ const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587');
 const SMTP_USER = process.env.SMTP_USER || '';
 const SMTP_PASS = process.env.SMTP_PASS || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'intel-os@jkconsultsllc.com';
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function getToday() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getDateDaysAgo(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
 
 // JK Consulting keyword profile for scoring
 const JK_KEYWORDS = [
@@ -58,7 +68,6 @@ function scoreOpportunity(opp) {
     opp.naicsCode || ''
   ].join(' ').toLowerCase();
 
-  // Keyword matches (up to 60 pts)
   let keywordHits = 0;
   for (const kw of JK_KEYWORDS) {
     if (text.includes(kw.toLowerCase())) {
@@ -68,19 +77,16 @@ function scoreOpportunity(opp) {
   }
   score = Math.min(score, 60);
 
-  // NAICS match (20 pts)
   if (opp.naicsCode && JK_NAICS.includes(String(opp.naicsCode).trim())) {
     score += 20;
   }
 
-  // Set-aside / small business (10 pts)
   const setAside = (opp.typeOfSetAside || '').toLowerCase();
   if (setAside.includes('small') || setAside.includes('sdvo') ||
       setAside.includes('wosb') || setAside.includes('8(a)')) {
     score += 10;
   }
 
-  // State/region match: MD, DC, VA (10 pts)
   const place = (opp.placeOfPerformance || '').toLowerCase();
   const officeAddr = (opp.officeAddress || '').toLowerCase();
   const combined = place + ' ' + officeAddr;
@@ -166,8 +172,8 @@ JK Consulting, LLC
 }
 
 // ─── SAM.GOV PROXY ───────────────────────────────────────────────────────────
-const apiKey = req.query.api_key || req.headers['x-api-key'] || SAM_API_KEY;
-  
+app.get('/api/sam/opportunities', async (req, res) => {
+  const apiKey = req.query.api_key || req.headers['x-api-key'] || SAM_API_KEY;
   if (!apiKey) {
     return res.status(400).json({ error: 'SAM.gov API key required' });
   }
@@ -198,8 +204,6 @@ const apiKey = req.query.api_key || req.headers['x-api-key'] || SAM_API_KEY;
     }
 
     const data = await samRes.json();
-
-    // Add JK scores to each opportunity
     const opportunities = (data.opportunitiesData || []).map(opp => ({
       ...opp,
       jkScore: scoreOpportunity(opp)
@@ -213,8 +217,6 @@ const apiKey = req.query.api_key || req.headers['x-api-key'] || SAM_API_KEY;
 });
 
 // ─── STATE PORTAL SCRAPERS ───────────────────────────────────────────────────
-
-// Maryland eMMA portal
 async function scrapeMarylandEMMA() {
   console.log('[SCRAPE] Maryland eMMA...');
   try {
@@ -257,7 +259,6 @@ async function scrapeMarylandEMMA() {
   }
 }
 
-// Virginia eVA portal
 async function scrapeVirginiaEVA() {
   console.log('[SCRAPE] Virginia eVA...');
   try {
@@ -281,7 +282,6 @@ async function scrapeVirginiaEVA() {
   }
 }
 
-// DC Office of Contracting and Procurement
 async function scrapeDCOCP() {
   console.log('[SCRAPE] DC OCP...');
   try {
@@ -329,7 +329,6 @@ async function runSweep(triggeredBy = 'schedule') {
 
   const allOpps = [];
 
-  // 1. SAM.gov sweep
   if (SAM_API_KEY) {
     try {
       const params = new URLSearchParams({
@@ -363,20 +362,17 @@ async function runSweep(triggeredBy = 'schedule') {
     console.log('[SWEEP] SAM_API_KEY not set — skipping SAM.gov sweep');
   }
 
-  // 2. State portals
   const mdOpps = await scrapeMarylandEMMA();
   const vaOpps = await scrapeVirginiaEVA();
   const dcOpps = await scrapeDCOCP();
   allOpps.push(...mdOpps, ...vaOpps, ...dcOpps);
 
-  // 3. Filter high-probability (score >= 40)
   const highPriority = allOpps
     .filter(o => o.jkScore >= 40)
     .sort((a, b) => b.jkScore - a.jkScore);
 
   console.log(`[SWEEP] Total: ${allOpps.length} opps | High-priority (≥40): ${highPriority.length}`);
 
-  // 4. Store results
   lastSweepResults = {
     timestamp: new Date().toISOString(),
     triggeredBy,
@@ -385,7 +381,6 @@ async function runSweep(triggeredBy = 'schedule') {
     opportunities: allOpps.sort((a, b) => b.jkScore - a.jkScore)
   };
 
-  // 5. Send email digest if high-priority opps found
   if (highPriority.length > 0) {
     await sendSweepDigest(highPriority);
   } else {
@@ -504,24 +499,13 @@ cron.schedule('0 6,12,18,0 * * *', () => {
   );
 }, { timezone: 'America/New_York' });
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-function getToday() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function getDateDaysAgo(days) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
-}
-
 // ─── START ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n${'='.repeat(60)}`);
   console.log('  INTEL·OS Backend Sweeper');
   console.log(`  Running on port ${PORT}`);
-  console.log(`  SAM.gov API: ${SAM_API_KEY ? '✓ configured' : '✗ not set'}`);
-  console.log(`  Email: ${SMTP_HOST ? '✓ configured' : '✗ not set'}`);
+  console.log(`  SAM.gov API: ${SAM_API_KEY ? '✓ configured' : '✗ not set (add SAM_API_KEY env var)'}`);
+  console.log(`  Email: ${SMTP_HOST ? '✓ configured' : '✗ not set (add SMTP env vars)'}`);
   console.log(`  Notify: ${NOTIFY_EMAIL}`);
   console.log(`  Sweeps: every 6 hours (6am/12pm/6pm/midnight ET)`);
   console.log('='.repeat(60) + '\n');
