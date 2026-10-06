@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
+// Node 18+ has fetch built-in — no import needed
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 const cheerio = require('cheerio');
@@ -219,16 +219,15 @@ async function scrapeMarylandEMMA() {
   try {
     const res = await fetch(
       'https://emma.maryland.gov/page.aspx/en/rfp/request_browse_public',
-      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' }, timeout: 15000 }
+      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' } }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     const $ = cheerio.load(html);
     const opps = [];
 
-    // Parse eMMA table rows
     $('table tr').each((i, row) => {
-      if (i === 0) return; // skip header
+      if (i === 0) return;
       const cells = $(row).find('td');
       if (cells.length >= 3) {
         const title = $(cells[0]).text().trim();
@@ -263,10 +262,9 @@ async function scrapeVirginiaEVA() {
   try {
     const res = await fetch(
       'https://eva.virginia.gov/pages/eva-landing-page.htm',
-      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' }, timeout: 15000 }
+      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' } }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // eVA is JavaScript-heavy; we return a placeholder and note the limitation
     console.log('[SCRAPE] Virginia eVA: portal requires JS rendering, returning placeholder');
     return [{
       source: 'Virginia eVA',
@@ -288,18 +286,16 @@ async function scrapeDCOCP() {
   try {
     const res = await fetch(
       'https://ocp.dc.gov/page/solicitations',
-      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' }, timeout: 15000 }
+      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' } }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     const $ = cheerio.load(html);
     const opps = [];
 
-    // Parse DC OCP solicitation listings
     $('.views-row, .solicitation-row, tr').each((i, el) => {
       const text = $(el).text().trim();
       const lowerText = text.toLowerCase();
-      // Only grab rows that mention HR-related terms
       if (JK_KEYWORDS.some(kw => lowerText.includes(kw.toLowerCase()))) {
         const opp = {
           source: 'DC OCP',
@@ -379,7 +375,7 @@ async function runSweep(triggeredBy = 'schedule') {
 
   console.log(`[SWEEP] Total: ${allOpps.length} opps | High-priority (≥40): ${highPriority.length}`);
 
-  // 4. Store results in memory for API access
+  // 4. Store results
   lastSweepResults = {
     timestamp: new Date().toISOString(),
     triggeredBy,
@@ -401,7 +397,7 @@ async function runSweep(triggeredBy = 'schedule') {
 
 // ─── EMAIL DIGEST ─────────────────────────────────────────────────────────────
 async function sendSweepDigest(opportunities) {
-  const topOpps = opportunities.slice(0, 10); // max 10 per email
+  const topOpps = opportunities.slice(0, 10);
 
   const oppRows = topOpps.map(opp => {
     const score = opp.jkScore || 0;
@@ -495,14 +491,12 @@ app.get('/api/sweep/results', (req, res) => {
 
 app.post('/api/sweep/run', async (req, res) => {
   res.json({ message: 'Sweep started', timestamp: new Date().toISOString() });
-  // Run async — don't block the response
   runSweep('manual-trigger').catch(err =>
     console.error('[SWEEP] Manual sweep error:', err)
   );
 });
 
 // ─── SCHEDULED SWEEPS ────────────────────────────────────────────────────────
-// Every 6 hours: 6am, 12pm, 6pm, midnight ET
 cron.schedule('0 6,12,18,0 * * *', () => {
   runSweep('cron-6hr').catch(err =>
     console.error('[CRON] Sweep error:', err)
@@ -525,13 +519,12 @@ app.listen(PORT, () => {
   console.log(`\n${'='.repeat(60)}`);
   console.log('  INTEL·OS Backend Sweeper');
   console.log(`  Running on port ${PORT}`);
-  console.log(`  SAM.gov API: ${SAM_API_KEY ? '✓ configured' : '✗ not set (add SAM_API_KEY env var)'}`);
-  console.log(`  Email: ${SMTP_HOST ? '✓ configured' : '✗ not set (add SMTP env vars)'}`);
+  console.log(`  SAM.gov API: ${SAM_API_KEY ? '✓ configured' : '✗ not set'}`);
+  console.log(`  Email: ${SMTP_HOST ? '✓ configured' : '✗ not set'}`);
   console.log(`  Notify: ${NOTIFY_EMAIL}`);
   console.log(`  Sweeps: every 6 hours (6am/12pm/6pm/midnight ET)`);
   console.log('='.repeat(60) + '\n');
 
-  // Run an initial sweep 30 seconds after startup
   setTimeout(() => {
     runSweep('startup').catch(err =>
       console.error('[STARTUP] Sweep error:', err)
