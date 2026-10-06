@@ -4,7 +4,8 @@ const cors = require('cors');
 // Node 18+ has fetch built-in — no import needed
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
-const cheerio = require('cheerio');
+let cheerio;
+try { cheerio = require('cheerio'); } catch(e) { cheerio = null; }
 
 const app = express();
 const PORT = process.env.PORT || 3001;
