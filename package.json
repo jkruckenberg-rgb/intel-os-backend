@@ -12,7 +12,6 @@
     "cors": "^2.8.5",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.7",
-    "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.3.1"
   },
   "engines": {
