@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+// Node 18+ has fetch built-in — no import needed
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
 let cheerio;
@@ -25,17 +26,6 @@ const SMTP_PORT = parseInt(process.env.SMTP_PORT || '587');
 const SMTP_USER = process.env.SMTP_USER || '';
 const SMTP_PASS = process.env.SMTP_PASS || '';
 const FROM_EMAIL = process.env.FROM_EMAIL || 'intel-os@jkconsultsllc.com';
-
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-function getToday() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function getDateDaysAgo(days) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
-}
 
 // JK Consulting keyword profile for scoring
 const JK_KEYWORDS = [
@@ -68,6 +58,7 @@ function scoreOpportunity(opp) {
     opp.naicsCode || ''
   ].join(' ').toLowerCase();
 
+  // Keyword matches (up to 60 pts)
   let keywordHits = 0;
   for (const kw of JK_KEYWORDS) {
     if (text.includes(kw.toLowerCase())) {
@@ -77,19 +68,24 @@ function scoreOpportunity(opp) {
   }
   score = Math.min(score, 60);
 
+  // NAICS match (20 pts)
   if (opp.naicsCode && JK_NAICS.includes(String(opp.naicsCode).trim())) {
     score += 20;
   }
 
+  // Set-aside / small business (10 pts)
   const setAside = (opp.typeOfSetAside || '').toLowerCase();
   if (setAside.includes('small') || setAside.includes('sdvo') ||
       setAside.includes('wosb') || setAside.includes('8(a)')) {
     score += 10;
   }
 
-  const place = (opp.placeOfPerformance || '').toLowerCase();
-  const officeAddr = (opp.officeAddress || '').toLowerCase();
-  const combined = place + ' ' + officeAddr;
+  // State/region match: MD, DC, VA (10 pts)
+  const popObj = opp.placeOfPerformance || {};
+  const place = typeof popObj === 'string' ? popObj : [popObj.city?.name, popObj.state?.code, popObj.state?.name].filter(Boolean).join(' ');
+  const officeAddrRaw = opp.officeAddress || {};
+  const officeAddr = typeof officeAddrRaw === 'string' ? officeAddrRaw : [officeAddrRaw.city?.name, officeAddrRaw.state?.code].filter(Boolean).join(' ');
+  const combined = (place + ' ' + officeAddr).toLowerCase();
   if (combined.includes('maryland') || combined.includes(' md ') ||
       combined.includes('district of columbia') || combined.includes(' dc ') ||
       combined.includes('virginia') || combined.includes(' va ')) {
@@ -204,6 +200,8 @@ app.get('/api/sam/opportunities', async (req, res) => {
     }
 
     const data = await samRes.json();
+
+    // Add JK scores to each opportunity
     const opportunities = (data.opportunitiesData || []).map(opp => ({
       ...opp,
       jkScore: scoreOpportunity(opp)
@@ -217,20 +215,23 @@ app.get('/api/sam/opportunities', async (req, res) => {
 });
 
 // ─── STATE PORTAL SCRAPERS ───────────────────────────────────────────────────
+
+// Maryland eMMA portal
 async function scrapeMarylandEMMA() {
   console.log('[SCRAPE] Maryland eMMA...');
   try {
     const res = await fetch(
       'https://emma.maryland.gov/page.aspx/en/rfp/request_browse_public',
-      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' } }
+      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' }, timeout: 15000 }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     const $ = cheerio.load(html);
     const opps = [];
 
+    // Parse eMMA table rows
     $('table tr').each((i, row) => {
-      if (i === 0) return;
+      if (i === 0) return; // skip header
       const cells = $(row).find('td');
       if (cells.length >= 3) {
         const title = $(cells[0]).text().trim();
@@ -259,14 +260,16 @@ async function scrapeMarylandEMMA() {
   }
 }
 
+// Virginia eVA portal
 async function scrapeVirginiaEVA() {
   console.log('[SCRAPE] Virginia eVA...');
   try {
     const res = await fetch(
       'https://eva.virginia.gov/pages/eva-landing-page.htm',
-      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' } }
+      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' }, timeout: 15000 }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // eVA is JavaScript-heavy; we return a placeholder and note the limitation
     console.log('[SCRAPE] Virginia eVA: portal requires JS rendering, returning placeholder');
     return [{
       source: 'Virginia eVA',
@@ -282,21 +285,24 @@ async function scrapeVirginiaEVA() {
   }
 }
 
+// DC Office of Contracting and Procurement
 async function scrapeDCOCP() {
   console.log('[SCRAPE] DC OCP...');
   try {
     const res = await fetch(
       'https://ocp.dc.gov/page/solicitations',
-      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' } }
+      { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; INTEL-OS-Sweeper/1.0)' }, timeout: 15000 }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const html = await res.text();
     const $ = cheerio.load(html);
     const opps = [];
 
+    // Parse DC OCP solicitation listings
     $('.views-row, .solicitation-row, tr').each((i, el) => {
       const text = $(el).text().trim();
       const lowerText = text.toLowerCase();
+      // Only grab rows that mention HR-related terms
       if (JK_KEYWORDS.some(kw => lowerText.includes(kw.toLowerCase()))) {
         const opp = {
           source: 'DC OCP',
@@ -329,6 +335,7 @@ async function runSweep(triggeredBy = 'schedule') {
 
   const allOpps = [];
 
+  // 1. SAM.gov sweep
   if (SAM_API_KEY) {
     try {
       const params = new URLSearchParams({
@@ -362,17 +369,20 @@ async function runSweep(triggeredBy = 'schedule') {
     console.log('[SWEEP] SAM_API_KEY not set — skipping SAM.gov sweep');
   }
 
+  // 2. State portals
   const mdOpps = await scrapeMarylandEMMA();
   const vaOpps = await scrapeVirginiaEVA();
   const dcOpps = await scrapeDCOCP();
   allOpps.push(...mdOpps, ...vaOpps, ...dcOpps);
 
+  // 3. Filter high-probability (score >= 40)
   const highPriority = allOpps
     .filter(o => o.jkScore >= 40)
     .sort((a, b) => b.jkScore - a.jkScore);
 
   console.log(`[SWEEP] Total: ${allOpps.length} opps | High-priority (≥40): ${highPriority.length}`);
 
+  // 4. Store results in memory for API access
   lastSweepResults = {
     timestamp: new Date().toISOString(),
     triggeredBy,
@@ -381,6 +391,7 @@ async function runSweep(triggeredBy = 'schedule') {
     opportunities: allOpps.sort((a, b) => b.jkScore - a.jkScore)
   };
 
+  // 5. Send email digest if high-priority opps found
   if (highPriority.length > 0) {
     await sendSweepDigest(highPriority);
   } else {
@@ -393,7 +404,7 @@ async function runSweep(triggeredBy = 'schedule') {
 
 // ─── EMAIL DIGEST ─────────────────────────────────────────────────────────────
 async function sendSweepDigest(opportunities) {
-  const topOpps = opportunities.slice(0, 10);
+  const topOpps = opportunities.slice(0, 10); // max 10 per email
 
   const oppRows = topOpps.map(opp => {
     const score = opp.jkScore || 0;
@@ -487,17 +498,30 @@ app.get('/api/sweep/results', (req, res) => {
 
 app.post('/api/sweep/run', async (req, res) => {
   res.json({ message: 'Sweep started', timestamp: new Date().toISOString() });
+  // Run async — don't block the response
   runSweep('manual-trigger').catch(err =>
     console.error('[SWEEP] Manual sweep error:', err)
   );
 });
 
 // ─── SCHEDULED SWEEPS ────────────────────────────────────────────────────────
+// Every 6 hours: 6am, 12pm, 6pm, midnight ET
 cron.schedule('0 6,12,18,0 * * *', () => {
   runSweep('cron-6hr').catch(err =>
     console.error('[CRON] Sweep error:', err)
   );
 }, { timezone: 'America/New_York' });
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function getToday() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getDateDaysAgo(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
 
 // ─── START ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
@@ -510,6 +534,7 @@ app.listen(PORT, () => {
   console.log(`  Sweeps: every 6 hours (6am/12pm/6pm/midnight ET)`);
   console.log('='.repeat(60) + '\n');
 
+  // Run an initial sweep 30 seconds after startup
   setTimeout(() => {
     runSweep('startup').catch(err =>
       console.error('[STARTUP] Sweep error:', err)
